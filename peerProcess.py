@@ -39,9 +39,13 @@ def main():
         print("Peer ID must be an integer.")
         sys.exit(1)
 
-    common_config = load_common_config()
-    peers = load_peer_info()
-    current_peer = get_peer_by_id(peer_id, peers)
+    try:
+        common_config = load_common_config()
+        peers = load_peer_info()
+        current_peer = get_peer_by_id(peer_id, peers)
+    except Exception as e:
+        print(f"Error: {e}")
+        sys.exit(1)
 
     peer_state = PeerState(
         current_peer=current_peer,
