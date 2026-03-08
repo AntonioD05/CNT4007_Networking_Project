@@ -4,6 +4,20 @@ from config_loader import load_common_config, load_peer_info, get_peer_by_id
 from peer_state import PeerState
 from logger import PeerLogger
 from handshake import build_handshake, parse_handshake, is_valid_handshake
+from message import (
+    build_choke,
+    build_unchoke,
+    build_interested,
+    build_not_interested,
+    build_have,
+    build_bitfield,
+    build_request,
+    build_piece,
+    parse_message,
+    parse_have_payload,
+    parse_request_payload,
+    parse_piece_payload,
+)
 
 
 def main():
@@ -82,6 +96,44 @@ def main():
     print(f"Parsed header: {parsed_handshake['header']}")
     print(f"Parsed zero bits: {parsed_handshake['zero_bits']}")
 
+    choke_msg = build_choke()
+    unchoke_msg = build_unchoke()
+    interested_msg = build_interested()
+    not_interested_msg = build_not_interested()
+    have_msg = build_have(7)
+    bitfield_msg = build_bitfield(b"\xaa\x0f")
+    request_msg = build_request(12)
+    piece_msg = build_piece(5, b"hello")
+
+    parsed_choke = parse_message(choke_msg)
+    parsed_unchoke = parse_message(unchoke_msg)
+    parsed_interested = parse_message(interested_msg)
+    parsed_not_interested = parse_message(not_interested_msg)
+    parsed_have = parse_message(have_msg)
+    parsed_bitfield = parse_message(bitfield_msg)
+    parsed_request = parse_message(request_msg)
+    parsed_piece = parse_message(piece_msg)
+
+    print("\n=== Message Test ===")
+    print(f"Choke parsed: {parsed_choke}")
+    print(f"Unchoke parsed: {parsed_unchoke}")
+    print(f"Interested parsed: {parsed_interested}")
+    print(f"Not interested parsed: {parsed_not_interested}")
+
+    print(f"\nHave parsed: {parsed_have}")
+    print(f"Have piece index: {parse_have_payload(parsed_have['payload'])}")
+
+    print(f"\nBitfield parsed: {parsed_bitfield}")
+
+    print(f"\nRequest parsed: {parsed_request}")
+    print(f"Request piece index: {parse_request_payload(parsed_request['payload'])}")
+
+    piece_payload_info = parse_piece_payload(parsed_piece["payload"])
+    print(f"\nPiece parsed: {parsed_piece}")
+    print(f"Piece payload index: {piece_payload_info['piece_index']}")
+    print(f"Piece payload data: {piece_payload_info['piece_data']}")
+
 
 if __name__ == "__main__":
     main()
+
