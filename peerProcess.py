@@ -24,6 +24,8 @@ from utils import (
     bitfield_list_to_bytes,
     bitfield_bytes_to_list,
 )
+from server import PeerServer
+from connection import ConnectionHandler
 
 
 def main():
@@ -151,6 +153,25 @@ def main():
     print(f"Sample bitfield list: {sample_bitfield}")
     print(f"Packed bitfield bytes: {packed_bitfield}")
     print(f"Unpacked bitfield list: {unpacked_bitfield}")
+
+    peer_server = PeerServer(
+        host=peer_state.host,
+        port=peer_state.port,
+        peer_id=peer_state.peer_id,
+    )
+
+    example_connection = None
+    if peer_state.neighbors:
+        example_connection = ConnectionHandler(
+            local_peer_id=peer_state.peer_id,
+            remote_peer_id=peer_state.neighbors[0].peer_id,
+        )
+
+    print("\n=== Networking Skeleton Test ===")
+    print(peer_server)
+    if example_connection is not None:
+        print(example_connection)
+        print(example_connection.summary())
 
 
 if __name__ == "__main__":
