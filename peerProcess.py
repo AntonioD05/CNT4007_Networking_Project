@@ -18,6 +18,12 @@ from message import (
     parse_request_payload,
     parse_piece_payload,
 )
+from utils import (
+    int_to_bytes,
+    bytes_to_int,
+    bitfield_list_to_bytes,
+    bitfield_bytes_to_list,
+)
 
 
 def main():
@@ -133,7 +139,19 @@ def main():
     print(f"Piece payload index: {piece_payload_info['piece_index']}")
     print(f"Piece payload data: {piece_payload_info['piece_data']}")
 
+    print("\n=== Utils Test ===")
+    four_bytes = int_to_bytes(1001, 4)
+    print(f"1001 as 4 bytes: {four_bytes}")
+    print(f"Back to int: {bytes_to_int(four_bytes)}")
+
+    sample_bitfield = [True, False, True, False, False, False, False, True, True, True]
+    packed_bitfield = bitfield_list_to_bytes(sample_bitfield)
+    unpacked_bitfield = bitfield_bytes_to_list(packed_bitfield, len(sample_bitfield))
+
+    print(f"Sample bitfield list: {sample_bitfield}")
+    print(f"Packed bitfield bytes: {packed_bitfield}")
+    print(f"Unpacked bitfield list: {unpacked_bitfield}")
+
 
 if __name__ == "__main__":
     main()
-
