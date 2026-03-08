@@ -6,7 +6,7 @@ from peer_state import PeerState
 
 def main():
     if len(sys.argv) != 2:
-        print("Usage: python peerProcess.py <peer_id>")
+        print("Usage: python3 peerProcess.py <peer_id>")
         sys.exit(1)
 
     try:
@@ -36,13 +36,18 @@ def main():
     print(f"Host: {peer_state.host}")
     print(f"Port: {peer_state.port}")
     print(f"Starts with file: {peer_state.has_file}")
-    print(f"Total number of pieces: {peer_state.num_pieces}")
-    print(f"Pieces currently owned: {peer_state.piece_count()}")
-    print(f"Has complete file: {peer_state.has_complete_file()}")
+    print(f"Total number of pieces: {peer_state.piece_manager.num_pieces}")
+    print(f"Pieces currently owned: {peer_state.piece_manager.piece_count()}")
+    print(f"Has complete file: {peer_state.piece_manager.has_complete_file()}")
 
     print("\n=== Bitfield Preview ===")
-    preview_length = min(64, peer_state.num_pieces)
-    print(peer_state.bitfield_as_string()[:preview_length])
+    preview_length = min(64, peer_state.piece_manager.num_pieces)
+    print(peer_state.piece_manager.bitfield_as_string()[:preview_length])
+
+    print("\n=== Piece Manager Checks ===")
+    print(f"Owns piece 0: {peer_state.piece_manager.has_piece(0)}")
+    print(f"Needs piece 0: {peer_state.piece_manager.needs_piece(0)}")
+    print(f"Requested pieces: {peer_state.piece_manager.requested_pieces}")
 
     print("\n=== Neighbors ===")
     for neighbor in peer_state.neighbors:
