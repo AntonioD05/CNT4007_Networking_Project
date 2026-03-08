@@ -2,11 +2,12 @@ import sys
 
 from config_loader import load_common_config, load_peer_info, get_peer_by_id
 from peer_state import PeerState
+from logger import PeerLogger
 
 
 def main():
     if len(sys.argv) != 2:
-        print("Usage: python3 peerProcess.py <peer_id>")
+        print("Usage: python peerProcess.py <peer_id>")
         sys.exit(1)
 
     try:
@@ -24,6 +25,8 @@ def main():
         common_config=common_config,
         all_peers=peers,
     )
+
+    logger = PeerLogger(peer_id=peer_state.peer_id)
 
     print("=== Current Peer ===")
     print(peer_state.current_peer)
@@ -53,6 +56,22 @@ def main():
     for neighbor in peer_state.neighbors:
         print(neighbor)
 
+    logger.log_custom(f"Peer {peer_state.peer_id} started successfully.")
+    logger.log_custom(
+        f"Peer {peer_state.peer_id} initialized with {peer_state.piece_manager.piece_count()} pieces."
+    )
+
+    if peer_state.neighbors:
+        first_neighbor = peer_state.neighbors[0]
+        logger.log_tcp_connection_to(first_neighbor.peer_id)
+        logger.log_receive_interested(first_neighbor.peer_id)
+
+    if peer_state.piece_manager.has_complete_file():
+        logger.log_complete_file()
+
+    print(f"\nLog file created: log_peer_{peer_state.peer_id}.log")
+
 
 if __name__ == "__main__":
     main()
+
