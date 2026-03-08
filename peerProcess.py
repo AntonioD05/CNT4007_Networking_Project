@@ -3,6 +3,7 @@ import sys
 from config_loader import load_common_config, load_peer_info, get_peer_by_id
 from peer_state import PeerState
 from logger import PeerLogger
+from handshake import build_handshake, parse_handshake, is_valid_handshake
 
 
 def main():
@@ -71,7 +72,16 @@ def main():
 
     print(f"\nLog file created: log_peer_{peer_state.peer_id}.log")
 
+    handshake = build_handshake(peer_state.peer_id)
+    parsed_handshake = parse_handshake(handshake)
+
+    print("\n=== Handshake Test ===")
+    print(f"Handshake length: {len(handshake)}")
+    print(f"Handshake valid: {is_valid_handshake(handshake)}")
+    print(f"Parsed peer ID: {parsed_handshake['peer_id']}")
+    print(f"Parsed header: {parsed_handshake['header']}")
+    print(f"Parsed zero bits: {parsed_handshake['zero_bits']}")
+
 
 if __name__ == "__main__":
     main()
-
