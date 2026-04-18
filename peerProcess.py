@@ -1,4 +1,6 @@
 import sys
+import time
+import threading
 
 from config_loader import load_common_config, load_peer_info, get_peer_by_id
 from peer_state import PeerState
@@ -27,6 +29,43 @@ from utils import (
 from server import PeerServer
 from connection import ConnectionHandler
 
+CONFIG_DIR = "project_config_file_local"
+
+
+def accept_incoming_connections(peer_server: PeerServer, peer_state: PeerState, logger: PeerLogger, expected_count: int):
+    """
+    Accept incoming TCP connections from later peers.
+    For Phase A, we only accept and store the socket.
+    """
+    accepted = 0
+
+    while accepted < expected_count:
+        try:
+            client_socket, client_address = peer_server.accept_connection()
+
+            connection = ConnectionHandler(
+                local_peer_id=peer_state.peer_id,
+                remote_peer_id=None,
+                sock=client_socket,
+                address=client_address,
+            )
+
+            temp_remote_id = -1 * (accepted + 1)
+            peer_state.add_connection(temp_remote_id, connection)
+
+            logger.log_custom(
+                f"Peer {peer_state.peer_id} accepted incoming TCP connection from {client_address}."
+            )
+
+            print(f"[ACCEPT] Peer {peer_state.peer_id} accepted connection from {client_address}")
+
+            accepted += 1
+
+        except Exception as e:
+            if peer_server.is_listening:
+                print(f"[ACCEPT ERROR] {e}")
+            break
+
 
 def main():
     if len(sys.argv) != 2:
@@ -40,8 +79,8 @@ def main():
         sys.exit(1)
 
     try:
-        common_config = load_common_config()
-        peers = load_peer_info()
+        common_config = load_common_config(CONFIG_DIR)
+        peers = load_peer_info(CONFIG_DIR)
         current_peer = get_peer_by_id(peer_id, peers)
     except Exception as e:
         print(f"Error: {e}")
@@ -87,11 +126,6 @@ def main():
     logger.log_custom(
         f"Peer {peer_state.peer_id} initialized with {peer_state.piece_manager.piece_count()} pieces."
     )
-
-    if peer_state.neighbors:
-        first_neighbor = peer_state.neighbors[0]
-        logger.log_tcp_connection_to(first_neighbor.peer_id)
-        logger.log_receive_interested(first_neighbor.peer_id)
 
     if peer_state.piece_manager.has_complete_file():
         logger.log_complete_file()
@@ -158,24 +192,88 @@ def main():
     print(f"Packed bitfield bytes: {packed_bitfield}")
     print(f"Unpacked bitfield list: {unpacked_bitfield}")
 
+    print("\n=== Phase A: Real Connection Layer ===")
+    earlier_peers = peer_state.get_earlier_peers()
+    later_peers = peer_state.get_later_peers()
+
+    print(f"Earlier peers: {[peer.peer_id for peer in earlier_peers]}")
+    print(f"Later peers: {[peer.peer_id for peer in later_peers]}")
+
     peer_server = PeerServer(
         host=peer_state.host,
         port=peer_state.port,
         peer_id=peer_state.peer_id,
     )
 
-    example_connection = None
-    if peer_state.neighbors:
-        example_connection = ConnectionHandler(
-            local_peer_id=peer_state.peer_id,
-            remote_peer_id=peer_state.neighbors[0].peer_id,
+    try:
+        peer_server.bind_and_listen()
+        print(f"[SERVER] Peer {peer_state.peer_id} listening on port {peer_state.port}")
+        logger.log_custom(
+            f"Peer {peer_state.peer_id} started server listening on port {peer_state.port}."
         )
+    except Exception as e:
+        print(f"[SERVER ERROR] Could not start server: {e}")
+        logger.log_custom(
+            f"Peer {peer_state.peer_id} failed to start server: {e}"
+        )
+        sys.exit(1)
 
-    print("\n=== Networking Skeleton Test ===")
-    print(peer_server)
-    if example_connection is not None:
-        print(example_connection)
-        print(example_connection.summary())
+    accept_thread = threading.Thread(
+        target=accept_incoming_connections,
+        args=(peer_server, peer_state, logger, len(later_peers)),
+        daemon=True,
+    )
+    accept_thread.start()
+
+    time.sleep(1)
+
+    for remote_peer in earlier_peers:
+        try:
+            connection = ConnectionHandler(
+                local_peer_id=peer_state.peer_id,
+                remote_peer_id=remote_peer.peer_id,
+            )
+            connection.connect(remote_peer.host, remote_peer.port)
+            peer_state.add_connection(remote_peer.peer_id, connection)
+
+            print(
+                f"[CONNECT] Peer {peer_state.peer_id} connected to peer {remote_peer.peer_id} "
+                f"at {remote_peer.host}:{remote_peer.port}"
+            )
+
+            logger.log_tcp_connection_to(remote_peer.peer_id)
+
+        except Exception as e:
+            print(
+                f"[CONNECT ERROR] Peer {peer_state.peer_id} could not connect to "
+                f"peer {remote_peer.peer_id}: {e}"
+            )
+            logger.log_custom(
+                f"Peer {peer_state.peer_id} failed outgoing connection to peer {remote_peer.peer_id}: {e}"
+            )
+
+    print("\n[RUNNING] Peer is now waiting for connections. Press Ctrl+C to stop.")
+
+    try:
+        while True:
+            time.sleep(2)
+            print("\n=== Active Connections Summary ===")
+            with peer_state.connections_lock:
+                for remote_id, connection in peer_state.connections.items():
+                    print(f"{remote_id}: {connection.summary()}")
+
+            print(f"Total active connections stored: {peer_state.connection_count()}")
+
+    except KeyboardInterrupt:
+        print(f"\n[SHUTDOWN] Stopping peer {peer_state.peer_id}...")
+
+        peer_server.close()
+
+        with peer_state.connections_lock:
+            for connection in peer_state.connections.values():
+                connection.close()
+
+        print(f"[SHUTDOWN] Peer {peer_state.peer_id} closed server and connections.")
 
 
 if __name__ == "__main__":
