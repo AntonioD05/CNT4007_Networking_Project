@@ -1,8 +1,15 @@
 import socket
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 
 from handshake import build_handshake, parse_handshake, is_valid_handshake
-from utils import recv_exact
+from utils import recv_exact, bitfield_bytes_to_list, bitfield_list_to_bytes
+from message import (
+    build_bitfield,
+    build_interested,
+    build_not_interested,
+    parse_message,
+    MESSAGE_TYPES,
+)
 
 
 class ConnectionHandler:
@@ -25,6 +32,8 @@ class ConnectionHandler:
         self.peer_is_choked = True
         self.peer_is_interested = False
         self.am_interested = False
+
+        self.remote_bitfield: Optional[List[bool]] = None
 
     def set_remote_peer_id(self, remote_peer_id: int) -> None:
         self.remote_peer_id = remote_peer_id
@@ -56,15 +65,6 @@ class ConnectionHandler:
             raise RuntimeError("Connection is not active")
         self.sock.sendall(data)
 
-    def recv_bytes(self, num_bytes: int) -> bytes:
-        if self.sock is None or not self.is_connected:
-            raise RuntimeError("Connection is not active")
-
-        data = self.sock.recv(num_bytes)
-        if data == b"":
-            raise ConnectionError("Socket connection closed by remote peer")
-        return data
-
     def send_handshake(self) -> None:
         handshake = build_handshake(self.local_peer_id)
         self.send_bytes(handshake)
@@ -81,6 +81,57 @@ class ConnectionHandler:
         self.handshake_completed = True
         return remote_peer_id
 
+    def send_bitfield(self, local_bitfield: List[bool]) -> None:
+        payload = bitfield_list_to_bytes(local_bitfield)
+        message = build_bitfield(payload)
+        self.send_bytes(message)
+
+    def receive_message(self) -> dict:
+        """
+        Read one full normal protocol message:
+        first 4 bytes length, then the rest.
+        """
+        length_bytes = recv_exact(self.sock, 4)
+        message_length = int.from_bytes(length_bytes, byteorder="big")
+        rest = recv_exact(self.sock, message_length)
+        full_message = length_bytes + rest
+        return parse_message(full_message)
+
+    def receive_bitfield(self, num_pieces: int) -> List[bool]:
+        parsed = self.receive_message()
+
+        if parsed["type"] != MESSAGE_TYPES["bitfield"]:
+            raise ValueError(
+                f"Expected bitfield message, got type {parsed['type_name']}"
+            )
+
+        remote_bitfield = bitfield_bytes_to_list(parsed["payload"], num_pieces)
+        self.remote_bitfield = remote_bitfield
+        return remote_bitfield
+
+    def send_interested(self) -> None:
+        self.send_bytes(build_interested())
+        self.am_interested = True
+
+    def send_not_interested(self) -> None:
+        self.send_bytes(build_not_interested())
+        self.am_interested = False
+
+    def receive_interest_message(self) -> str:
+        parsed = self.receive_message()
+
+        if parsed["type"] == MESSAGE_TYPES["interested"]:
+            self.peer_is_interested = True
+            return "interested"
+
+        if parsed["type"] == MESSAGE_TYPES["not_interested"]:
+            self.peer_is_interested = False
+            return "not_interested"
+
+        raise ValueError(
+            f"Expected interested/not interested, got type {parsed['type_name']}"
+        )
+
     def close(self) -> None:
         if self.sock is not None:
             try:
@@ -96,6 +147,7 @@ class ConnectionHandler:
             "address": self.address,
             "is_connected": self.is_connected,
             "handshake_completed": self.handshake_completed,
+            "remote_bitfield_known": self.remote_bitfield is not None,
             "am_choked": self.am_choked,
             "peer_is_choked": self.peer_is_choked,
             "peer_is_interested": self.peer_is_interested,

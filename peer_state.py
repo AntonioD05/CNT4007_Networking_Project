@@ -84,3 +84,13 @@ class PeerState:
     def connection_count(self) -> int:
         with self.connections_lock:
             return len(self.connections)
+
+    def is_interested_in_bitfield(self, remote_bitfield: List[bool]) -> bool:
+        """
+        Return True if the remote peer has at least one piece I do not have.
+        """
+        for i in range(min(len(remote_bitfield), self.piece_manager.num_pieces)):
+            if remote_bitfield[i] and not self.piece_manager.has_piece(i):
+                return True
+        return False
+    

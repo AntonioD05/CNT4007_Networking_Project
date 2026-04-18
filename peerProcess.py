@@ -60,6 +60,22 @@ def accept_incoming_connections(peer_server: PeerServer, peer_state: PeerState, 
             peer_state.replace_connection_key(temp_remote_id, remote_peer_id)
             logger.log_tcp_connection_from(remote_peer_id)
 
+            connection.send_bitfield(peer_state.piece_manager.bitfield)
+            print(f"[BITFIELD SEND] Peer {peer_state.peer_id} sent bitfield to peer {remote_peer_id}")
+
+            remote_bitfield = connection.receive_bitfield(peer_state.piece_manager.num_pieces)
+            print(f"[BITFIELD RECEIVE] Peer {peer_state.peer_id} received bitfield from peer {remote_peer_id}")
+
+            if peer_state.is_interested_in_bitfield(remote_bitfield):
+                connection.send_interested()
+                print(f"[INTEREST SEND] Peer {peer_state.peer_id} sent INTERESTED to peer {remote_peer_id}")
+            else:
+                connection.send_not_interested()
+                print(f"[INTEREST SEND] Peer {peer_state.peer_id} sent NOT INTERESTED to peer {remote_peer_id}")
+
+            interest_result = connection.receive_interest_message()
+            print(f"[INTEREST RECEIVE] Peer {peer_state.peer_id} received {interest_result.upper()} from peer {remote_peer_id}")
+
             accepted += 1
 
         except Exception as e:
@@ -193,7 +209,7 @@ def main():
     print(f"Packed bitfield bytes: {packed_bitfield}")
     print(f"Unpacked bitfield list: {unpacked_bitfield}")
 
-    print("\n=== Phase B: Real Handshake Over TCP ===")
+    print("\n=== Phase C: Bitfield Exchange + Interest ===")
     earlier_peers = peer_state.get_earlier_peers()
     later_peers = peer_state.get_later_peers()
 
@@ -255,13 +271,29 @@ def main():
             peer_state.add_connection(remote_peer.peer_id, connection)
             logger.log_tcp_connection_to(remote_peer.peer_id)
 
+            connection.send_bitfield(peer_state.piece_manager.bitfield)
+            print(f"[BITFIELD SEND] Peer {peer_state.peer_id} sent bitfield to peer {remote_peer.peer_id}")
+
+            remote_bitfield = connection.receive_bitfield(peer_state.piece_manager.num_pieces)
+            print(f"[BITFIELD RECEIVE] Peer {peer_state.peer_id} received bitfield from peer {remote_peer.peer_id}")
+
+            if peer_state.is_interested_in_bitfield(remote_bitfield):
+                connection.send_interested()
+                print(f"[INTEREST SEND] Peer {peer_state.peer_id} sent INTERESTED to peer {remote_peer.peer_id}")
+            else:
+                connection.send_not_interested()
+                print(f"[INTEREST SEND] Peer {peer_state.peer_id} sent NOT INTERESTED to peer {remote_peer.peer_id}")
+
+            interest_result = connection.receive_interest_message()
+            print(f"[INTEREST RECEIVE] Peer {peer_state.peer_id} received {interest_result.upper()} from peer {remote_peer.peer_id}")
+
         except Exception as e:
             print(
-                f"[CONNECT ERROR] Peer {peer_state.peer_id} could not connect/handshake with "
+                f"[CONNECT ERROR] Peer {peer_state.peer_id} could not complete setup with "
                 f"peer {remote_peer.peer_id}: {e}"
             )
             logger.log_custom(
-                f"Peer {peer_state.peer_id} failed outgoing connect/handshake with peer {remote_peer.peer_id}: {e}"
+                f"Peer {peer_state.peer_id} failed setup with peer {remote_peer.peer_id}: {e}"
             )
 
     print("\n[RUNNING] Peer is now waiting. Press Ctrl+C to stop.")
@@ -290,4 +322,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
