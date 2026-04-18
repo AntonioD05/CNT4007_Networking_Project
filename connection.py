@@ -10,6 +10,7 @@ from message import (
     build_unchoke,
     build_request,
     build_piece,
+    build_have,
     parse_message,
     parse_request_payload,
     parse_piece_payload,
@@ -71,8 +72,7 @@ class ConnectionHandler:
         self.sock.sendall(data)
 
     def send_handshake(self) -> None:
-        handshake = build_handshake(self.local_peer_id)
-        self.send_bytes(handshake)
+        self.send_bytes(build_handshake(self.local_peer_id))
 
     def receive_handshake(self) -> int:
         handshake_bytes = recv_exact(self.sock, 32)
@@ -88,8 +88,7 @@ class ConnectionHandler:
 
     def send_bitfield(self, local_bitfield: List[bool]) -> None:
         payload = bitfield_list_to_bytes(local_bitfield)
-        message = build_bitfield(payload)
-        self.send_bytes(message)
+        self.send_bytes(build_bitfield(payload))
 
     def receive_message(self) -> dict:
         length_bytes = recv_exact(self.sock, 4)
@@ -162,6 +161,9 @@ class ConnectionHandler:
             raise ValueError(f"Expected piece message, got type {parsed['type_name']}")
 
         return parse_piece_payload(parsed["payload"])
+
+    def send_have(self, piece_index: int) -> None:
+        self.send_bytes(build_have(piece_index))
 
     def close(self) -> None:
         if self.sock is not None:

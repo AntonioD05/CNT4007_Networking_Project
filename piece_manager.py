@@ -84,4 +84,3 @@ class PieceManager:
     def _validate_piece_index(self, piece_index: int) -> None:
         if piece_index < 0 or piece_index >= self.num_pieces:
             raise IndexError(f"Piece index {piece_index} out of range")
-

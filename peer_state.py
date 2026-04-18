@@ -91,5 +91,3 @@ class PeerState:
             if remote_bitfield[i] and not self.piece_manager.has_piece(i):
                 return True
         return False
-
-
