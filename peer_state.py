@@ -71,6 +71,12 @@ class PeerState:
         with self.connections_lock:
             self.connections[remote_peer_id] = connection
 
+    def replace_connection_key(self, old_remote_peer_id: int, new_remote_peer_id: int) -> None:
+        with self.connections_lock:
+            connection = self.connections.pop(old_remote_peer_id, None)
+            if connection is not None:
+                self.connections[new_remote_peer_id] = connection
+
     def get_connection(self, remote_peer_id: int):
         with self.connections_lock:
             return self.connections.get(remote_peer_id)
@@ -78,4 +84,3 @@ class PeerState:
     def connection_count(self) -> int:
         with self.connections_lock:
             return len(self.connections)
-        

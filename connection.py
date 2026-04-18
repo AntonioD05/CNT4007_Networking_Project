@@ -1,6 +1,9 @@
 import socket
 from typing import Optional, Tuple
 
+from handshake import build_handshake, parse_handshake, is_valid_handshake
+from utils import recv_exact
+
 
 class ConnectionHandler:
     def __init__(
@@ -16,6 +19,8 @@ class ConnectionHandler:
         self.address = address
 
         self.is_connected = sock is not None
+        self.handshake_completed = False
+
         self.am_choked = True
         self.peer_is_choked = True
         self.peer_is_interested = False
@@ -34,9 +39,6 @@ class ConnectionHandler:
         self.is_connected = True
 
     def connect(self, host: str, port: int, timeout: float = 5.0) -> None:
-        """
-        Create an outgoing TCP connection.
-        """
         if self.sock is not None:
             raise RuntimeError("Socket already attached to this connection")
 
@@ -50,20 +52,11 @@ class ConnectionHandler:
         self.is_connected = True
 
     def send_bytes(self, data: bytes) -> None:
-        """
-        Send all bytes over the socket.
-        """
         if self.sock is None or not self.is_connected:
             raise RuntimeError("Connection is not active")
-
         self.sock.sendall(data)
 
     def recv_bytes(self, num_bytes: int) -> bytes:
-        """
-        Receive up to num_bytes from the socket.
-        This is a simple wrapper for Phase A.
-        Later we will use recv_exact from utils.py for protocol reads.
-        """
         if self.sock is None or not self.is_connected:
             raise RuntimeError("Connection is not active")
 
@@ -72,10 +65,23 @@ class ConnectionHandler:
             raise ConnectionError("Socket connection closed by remote peer")
         return data
 
+    def send_handshake(self) -> None:
+        handshake = build_handshake(self.local_peer_id)
+        self.send_bytes(handshake)
+
+    def receive_handshake(self) -> int:
+        handshake_bytes = recv_exact(self.sock, 32)
+
+        if not is_valid_handshake(handshake_bytes):
+            raise ValueError("Received invalid handshake")
+
+        parsed = parse_handshake(handshake_bytes)
+        remote_peer_id = parsed["peer_id"]
+        self.remote_peer_id = remote_peer_id
+        self.handshake_completed = True
+        return remote_peer_id
+
     def close(self) -> None:
-        """
-        Close the socket cleanly.
-        """
         if self.sock is not None:
             try:
                 self.sock.close()
@@ -89,6 +95,7 @@ class ConnectionHandler:
             "remote_peer_id": self.remote_peer_id,
             "address": self.address,
             "is_connected": self.is_connected,
+            "handshake_completed": self.handshake_completed,
             "am_choked": self.am_choked,
             "peer_is_choked": self.peer_is_choked,
             "peer_is_interested": self.peer_is_interested,
@@ -100,5 +107,6 @@ class ConnectionHandler:
             f"ConnectionHandler(local_peer_id={self.local_peer_id}, "
             f"remote_peer_id={self.remote_peer_id}, "
             f"address={self.address}, "
-            f"is_connected={self.is_connected})"
+            f"is_connected={self.is_connected}, "
+            f"handshake_completed={self.handshake_completed})"
         )

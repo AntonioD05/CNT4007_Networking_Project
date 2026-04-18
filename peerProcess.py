@@ -33,10 +33,6 @@ CONFIG_DIR = "project_config_file_local"
 
 
 def accept_incoming_connections(peer_server: PeerServer, peer_state: PeerState, logger: PeerLogger, expected_count: int):
-    """
-    Accept incoming TCP connections from later peers.
-    For Phase A, we only accept and store the socket.
-    """
     accepted = 0
 
     while accepted < expected_count:
@@ -53,11 +49,16 @@ def accept_incoming_connections(peer_server: PeerServer, peer_state: PeerState, 
             temp_remote_id = -1 * (accepted + 1)
             peer_state.add_connection(temp_remote_id, connection)
 
-            logger.log_custom(
-                f"Peer {peer_state.peer_id} accepted incoming TCP connection from {client_address}."
-            )
-
             print(f"[ACCEPT] Peer {peer_state.peer_id} accepted connection from {client_address}")
+
+            remote_peer_id = connection.receive_handshake()
+            print(f"[HANDSHAKE RECEIVE] Peer {peer_state.peer_id} received handshake from peer {remote_peer_id}")
+
+            connection.send_handshake()
+            print(f"[HANDSHAKE SEND] Peer {peer_state.peer_id} sent handshake to peer {remote_peer_id}")
+
+            peer_state.replace_connection_key(temp_remote_id, remote_peer_id)
+            logger.log_tcp_connection_from(remote_peer_id)
 
             accepted += 1
 
@@ -192,7 +193,7 @@ def main():
     print(f"Packed bitfield bytes: {packed_bitfield}")
     print(f"Unpacked bitfield list: {unpacked_bitfield}")
 
-    print("\n=== Phase A: Real Connection Layer ===")
+    print("\n=== Phase B: Real Handshake Over TCP ===")
     earlier_peers = peer_state.get_earlier_peers()
     later_peers = peer_state.get_later_peers()
 
@@ -234,25 +235,36 @@ def main():
                 remote_peer_id=remote_peer.peer_id,
             )
             connection.connect(remote_peer.host, remote_peer.port)
-            peer_state.add_connection(remote_peer.peer_id, connection)
 
             print(
                 f"[CONNECT] Peer {peer_state.peer_id} connected to peer {remote_peer.peer_id} "
                 f"at {remote_peer.host}:{remote_peer.port}"
             )
 
+            connection.send_handshake()
+            print(f"[HANDSHAKE SEND] Peer {peer_state.peer_id} sent handshake to peer {remote_peer.peer_id}")
+
+            returned_peer_id = connection.receive_handshake()
+            print(f"[HANDSHAKE RECEIVE] Peer {peer_state.peer_id} received handshake from peer {returned_peer_id}")
+
+            if returned_peer_id != remote_peer.peer_id:
+                raise ValueError(
+                    f"Expected handshake from peer {remote_peer.peer_id}, got {returned_peer_id}"
+                )
+
+            peer_state.add_connection(remote_peer.peer_id, connection)
             logger.log_tcp_connection_to(remote_peer.peer_id)
 
         except Exception as e:
             print(
-                f"[CONNECT ERROR] Peer {peer_state.peer_id} could not connect to "
+                f"[CONNECT ERROR] Peer {peer_state.peer_id} could not connect/handshake with "
                 f"peer {remote_peer.peer_id}: {e}"
             )
             logger.log_custom(
-                f"Peer {peer_state.peer_id} failed outgoing connection to peer {remote_peer.peer_id}: {e}"
+                f"Peer {peer_state.peer_id} failed outgoing connect/handshake with peer {remote_peer.peer_id}: {e}"
             )
 
-    print("\n[RUNNING] Peer is now waiting for connections. Press Ctrl+C to stop.")
+    print("\n[RUNNING] Peer is now waiting. Press Ctrl+C to stop.")
 
     try:
         while True:
@@ -278,3 +290,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
