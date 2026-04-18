@@ -1,3 +1,4 @@
+import random
 import sys
 import time
 import threading
@@ -8,7 +9,7 @@ from peer_state import PeerState
 from logger import PeerLogger
 from server import PeerServer
 from connection import ConnectionHandler
-from message import parse_have_payload, MESSAGE_TYPES
+from message import parse_have_payload, parse_request_payload, parse_piece_payload, MESSAGE_TYPES
 
 CONFIG_DIR = "project_config_file_local"
 
@@ -33,74 +34,228 @@ def ensure_remote_bitfield(connection: ConnectionHandler, num_pieces: int) -> No
         connection.remote_bitfield = [False] * num_pieces
 
 
-def uploader_loop(connection: ConnectionHandler, peer_state: PeerState, logger: PeerLogger) -> None:
+def send_have_to_all(peer_state: PeerState, piece_index: int) -> None:
+    connections = peer_state.all_connections()
+    for remote_peer_id, connection in connections.items():
+        if connection.is_connected:
+            connection.send_have(piece_index)
+            print(f"[HAVE SEND] Peer {peer_state.peer_id} sent HAVE for piece {piece_index} to peer {remote_peer_id}")
+
+
+def request_next_piece(connection: ConnectionHandler, peer_state: PeerState) -> None:
+    if connection.am_choked:
+        return
+
+    if connection.remote_bitfield is None:
+        return
+
+    piece_index = peer_state.piece_manager.choose_missing_piece_from_remote_bitfield(connection.remote_bitfield)
+
+    if piece_index is None:
+        if connection.am_interested:
+            connection.send_not_interested()
+            print(f"[INTEREST SEND] Peer {peer_state.peer_id} sent NOT INTERESTED to peer {connection.remote_peer_id}")
+        return
+
+    peer_state.piece_manager.add_requested_piece(piece_index)
+    connection.send_request(piece_index)
+    print(f"[REQUEST SEND] Peer {peer_state.peer_id} requested piece {piece_index} from peer {connection.remote_peer_id}")
+
+
+def receiver_loop(connection: ConnectionHandler, peer_state: PeerState, logger: PeerLogger) -> None:
     remote_peer_id = connection.remote_peer_id
 
     while True:
-        parsed = connection.receive_message()
+        try:
+            parsed = connection.receive_message()
+            msg_type = parsed["type"]
 
-        if parsed["type"] == MESSAGE_TYPES["have"]:
-            piece_index = parse_have_payload(parsed["payload"])
-            ensure_remote_bitfield(connection, peer_state.piece_manager.num_pieces)
-            connection.remote_bitfield[piece_index] = True
-            print(f"[HAVE RECEIVE] Peer {peer_state.peer_id} received HAVE for piece {piece_index} from peer {remote_peer_id}")
+            if msg_type == MESSAGE_TYPES["interested"]:
+                connection.peer_is_interested = True
+                print(f"[INTEREST RECEIVE] Peer {peer_state.peer_id} received INTERESTED from peer {remote_peer_id}")
 
-        elif parsed["type"] == MESSAGE_TYPES["request"]:
-            requested_piece_index = int.from_bytes(parsed["payload"], byteorder="big")
-            print(f"[REQUEST RECEIVE] Peer {peer_state.peer_id} received request for piece {requested_piece_index} from peer {remote_peer_id}")
+            elif msg_type == MESSAGE_TYPES["not_interested"]:
+                connection.peer_is_interested = False
+                print(f"[INTEREST RECEIVE] Peer {peer_state.peer_id} received NOT_INTERESTED from peer {remote_peer_id}")
 
-            piece_data = peer_state.piece_manager.get_piece_data(requested_piece_index)
-            connection.send_piece_message(requested_piece_index, piece_data)
-            print(f"[PIECE SEND] Peer {peer_state.peer_id} sent piece {requested_piece_index} to peer {remote_peer_id}")
+            elif msg_type == MESSAGE_TYPES["choke"]:
+                connection.am_choked = True
+                print(f"[CHOKE RECEIVE] Peer {peer_state.peer_id} received CHOKE from peer {remote_peer_id}")
 
-        elif parsed["type"] == MESSAGE_TYPES["not_interested"]:
-            connection.peer_is_interested = False
-            print(f"[INTEREST RECEIVE] Peer {peer_state.peer_id} received NOT_INTERESTED from peer {remote_peer_id}")
+            elif msg_type == MESSAGE_TYPES["unchoke"]:
+                connection.am_choked = False
+                print(f"[UNCHOKE RECEIVE] Peer {peer_state.peer_id} received UNCHOKE from peer {remote_peer_id}")
+                request_next_piece(connection, peer_state)
+
+            elif msg_type == MESSAGE_TYPES["request"]:
+                requested_piece_index = parse_request_payload(parsed["payload"])
+                print(f"[REQUEST RECEIVE] Peer {peer_state.peer_id} received request for piece {requested_piece_index} from peer {remote_peer_id}")
+
+                if not connection.peer_is_choked:
+                    piece_data = peer_state.piece_manager.get_piece_data(requested_piece_index)
+                    connection.send_piece_message(requested_piece_index, piece_data)
+                    print(f"[PIECE SEND] Peer {peer_state.peer_id} sent piece {requested_piece_index} to peer {remote_peer_id}")
+
+            elif msg_type == MESSAGE_TYPES["piece"]:
+                piece_info = parse_piece_payload(parsed["payload"])
+                piece_index = piece_info["piece_index"]
+                piece_data = piece_info["piece_data"]
+
+                peer_state.piece_manager.mark_piece_as_owned(piece_index, piece_data)
+                peer_state.increment_download_count(remote_peer_id)
+                logger.log_downloaded_piece(remote_peer_id, piece_index, peer_state.piece_manager.piece_count())
+
+                print(f"[PIECE RECEIVE] Peer {peer_state.peer_id} received piece {piece_index} from peer {remote_peer_id}")
+                print(f"[PIECE STORE] Peer {peer_state.peer_id} now has {peer_state.piece_manager.piece_count()} pieces")
+
+                send_have_to_all(peer_state, piece_index)
+
+                if peer_state.piece_manager.has_complete_file():
+                    output_path = peer_state.piece_manager.reconstruct_file()
+                    logger.log_complete_file()
+                    print(f"[COMPLETE] Peer {peer_state.peer_id} now has the complete file.")
+                    print(f"[FILE WRITE] Peer {peer_state.peer_id} reconstructed file at: {output_path}")
+                    connection.send_not_interested()
+                    print(f"[INTEREST SEND] Peer {peer_state.peer_id} sent NOT INTERESTED to peer {remote_peer_id}")
+                else:
+                    request_next_piece(connection, peer_state)
+
+            elif msg_type == MESSAGE_TYPES["have"]:
+                piece_index = parse_have_payload(parsed["payload"])
+                ensure_remote_bitfield(connection, peer_state.piece_manager.num_pieces)
+                connection.remote_bitfield[piece_index] = True
+                print(f"[HAVE RECEIVE] Peer {peer_state.peer_id} received HAVE for piece {piece_index} from peer {remote_peer_id}")
+
+                if peer_state.piece_manager.needs_piece(piece_index):
+                    if not connection.am_interested:
+                        connection.send_interested()
+                        print(f"[INTEREST SEND] Peer {peer_state.peer_id} sent INTERESTED to peer {remote_peer_id}")
+
+                    if not connection.am_choked:
+                        request_next_piece(connection, peer_state)
+
+            else:
+                print(f"[RECEIVE LOOP] Peer {peer_state.peer_id} got unexpected message type {parsed['type_name']} from peer {remote_peer_id}")
+
+        except Exception as e:
+            print(f"[RECEIVE LOOP END] Peer {peer_state.peer_id} connection with peer {remote_peer_id} ended: {e}")
             break
 
-        else:
-            raise ValueError(f"Uploader loop got unexpected message type {parsed['type_name']}")
+
+def choose_preferred_neighbors(peer_state: PeerState, logger: PeerLogger) -> None:
+    k = peer_state.common_config.number_of_preferred_neighbors
+    connections = peer_state.all_connections()
+
+    interested_ids = [
+        peer_id for peer_id, conn in connections.items()
+        if conn.peer_is_interested
+    ]
+
+    if not interested_ids:
+        with peer_state.state_lock:
+            peer_state.preferred_neighbors = set()
+        return
+
+    if peer_state.piece_manager.has_complete_file():
+        random.shuffle(interested_ids)
+        selected = set(interested_ids[:k])
+    else:
+        shuffled = interested_ids[:]
+        random.shuffle(shuffled)
+        with peer_state.state_lock:
+            selected = set(
+                sorted(
+                    shuffled,
+                    key=lambda pid: peer_state.download_counts.get(pid, 0),
+                    reverse=True,
+                )[:k]
+            )
+
+    with peer_state.state_lock:
+        peer_state.preferred_neighbors = selected
+
+    logger.log_preferred_neighbors(sorted(selected))
+    print(f"[PREFERRED] Peer {peer_state.peer_id} preferred neighbors: {sorted(selected)}")
 
 
-def downloader_loop(connection: ConnectionHandler, peer_state: PeerState, logger: PeerLogger) -> None:
-    remote_peer_id = connection.remote_peer_id
+def choose_optimistic_neighbor(peer_state: PeerState, logger: PeerLogger) -> None:
+    connections = peer_state.all_connections()
 
-    connection.receive_unchoke()
-    print(f"[UNCHOKE RECEIVE] Peer {peer_state.peer_id} received UNCHOKE from peer {remote_peer_id}")
+    with peer_state.state_lock:
+        preferred = set(peer_state.preferred_neighbors)
+
+    candidates = [
+        peer_id for peer_id, conn in connections.items()
+        if conn.peer_is_interested and peer_id not in preferred and conn.peer_is_choked
+    ]
+
+    if not candidates:
+        with peer_state.state_lock:
+            peer_state.optimistic_neighbor = None
+        return
+
+    chosen = random.choice(candidates)
+
+    with peer_state.state_lock:
+        peer_state.optimistic_neighbor = chosen
+
+    logger.log_optimistic_unchoke(chosen)
+    print(f"[OPTIMISTIC] Peer {peer_state.peer_id} optimistic neighbor: {chosen}")
+
+
+def apply_choking_rules(peer_state: PeerState) -> None:
+    connections = peer_state.all_connections()
+
+    with peer_state.state_lock:
+        preferred = set(peer_state.preferred_neighbors)
+        optimistic = peer_state.optimistic_neighbor
+
+    for peer_id, connection in connections.items():
+        should_unchoke = peer_id in preferred or peer_id == optimistic
+
+        if should_unchoke and connection.peer_is_choked:
+            connection.send_unchoke()
+            print(f"[UNCHOKE SEND] Peer {peer_state.peer_id} sent UNCHOKE to peer {peer_id}")
+
+        elif not should_unchoke and not connection.peer_is_choked:
+            connection.send_choke()
+            print(f"[CHOKE SEND] Peer {peer_state.peer_id} sent CHOKE to peer {peer_id}")
+
+
+def preferred_neighbor_scheduler(peer_state: PeerState, logger: PeerLogger) -> None:
+    interval = peer_state.common_config.unchoking_interval
 
     while True:
-        piece_index = peer_state.piece_manager.choose_missing_piece_from_remote_bitfield(connection.remote_bitfield)
+        time.sleep(interval)
+        choose_preferred_neighbors(peer_state, logger)
+        apply_choking_rules(peer_state)
+        peer_state.reset_download_counts()
 
-        if piece_index is None:
-            connection.send_not_interested()
-            print(f"[INTEREST SEND] Peer {peer_state.peer_id} sent NOT INTERESTED to peer {remote_peer_id}")
-            break
 
-        peer_state.piece_manager.add_requested_piece(piece_index)
-        connection.send_request(piece_index)
-        print(f"[REQUEST SEND] Peer {peer_state.peer_id} requested piece {piece_index} from peer {remote_peer_id}")
+def optimistic_unchoke_scheduler(peer_state: PeerState, logger: PeerLogger) -> None:
+    interval = peer_state.common_config.optimistic_unchoking_interval
 
-        received_piece = connection.receive_piece_message()
-        received_piece_index = received_piece["piece_index"]
-        received_piece_data = received_piece["piece_data"]
+    while True:
+        time.sleep(interval)
+        choose_optimistic_neighbor(peer_state, logger)
+        apply_choking_rules(peer_state)
 
-        peer_state.piece_manager.mark_piece_as_owned(received_piece_index, received_piece_data)
-        logger.log_downloaded_piece(remote_peer_id, received_piece_index, peer_state.piece_manager.piece_count())
 
-        print(f"[PIECE RECEIVE] Peer {peer_state.peer_id} received piece {received_piece_index} from peer {remote_peer_id}")
-        print(f"[PIECE STORE] Peer {peer_state.peer_id} now has {peer_state.piece_manager.piece_count()} pieces")
+def setup_connection_after_handshake_and_bitfield(connection: ConnectionHandler, peer_state: PeerState) -> None:
+    remote_peer_id = connection.remote_peer_id
 
-        connection.send_have(received_piece_index)
-        print(f"[HAVE SEND] Peer {peer_state.peer_id} sent HAVE for piece {received_piece_index} to peer {remote_peer_id}")
+    connection.send_bitfield(peer_state.piece_manager.bitfield)
+    print(f"[BITFIELD SEND] Peer {peer_state.peer_id} sent bitfield to peer {remote_peer_id}")
 
-        if peer_state.piece_manager.has_complete_file():
-            output_path = peer_state.piece_manager.reconstruct_file()
-            logger.log_complete_file()
-            print(f"[COMPLETE] Peer {peer_state.peer_id} now has the complete file.")
-            print(f"[FILE WRITE] Peer {peer_state.peer_id} reconstructed file at: {output_path}")
-            connection.send_not_interested()
-            print(f"[INTEREST SEND] Peer {peer_state.peer_id} sent NOT INTERESTED to peer {remote_peer_id}")
-            break
+    remote_bitfield = connection.receive_bitfield(peer_state.piece_manager.num_pieces)
+    print(f"[BITFIELD RECEIVE] Peer {peer_state.peer_id} received bitfield from peer {remote_peer_id}")
+
+    if peer_state.is_interested_in_bitfield(remote_bitfield):
+        connection.send_interested()
+        print(f"[INTEREST SEND] Peer {peer_state.peer_id} sent INTERESTED to peer {remote_peer_id}")
+    else:
+        connection.send_not_interested()
+        print(f"[INTEREST SEND] Peer {peer_state.peer_id} sent NOT INTERESTED to peer {remote_peer_id}")
 
 
 def accept_incoming_connections(peer_server: PeerServer, peer_state: PeerState, logger: PeerLogger, expected_count: int):
@@ -131,26 +286,13 @@ def accept_incoming_connections(peer_server: PeerServer, peer_state: PeerState, 
             peer_state.replace_connection_key(temp_remote_id, remote_peer_id)
             logger.log_tcp_connection_from(remote_peer_id)
 
-            connection.send_bitfield(peer_state.piece_manager.bitfield)
-            print(f"[BITFIELD SEND] Peer {peer_state.peer_id} sent bitfield to peer {remote_peer_id}")
+            setup_connection_after_handshake_and_bitfield(connection, peer_state)
 
-            remote_bitfield = connection.receive_bitfield(peer_state.piece_manager.num_pieces)
-            print(f"[BITFIELD RECEIVE] Peer {peer_state.peer_id} received bitfield from peer {remote_peer_id}")
-
-            if peer_state.is_interested_in_bitfield(remote_bitfield):
-                connection.send_interested()
-                print(f"[INTEREST SEND] Peer {peer_state.peer_id} sent INTERESTED to peer {remote_peer_id}")
-            else:
-                connection.send_not_interested()
-                print(f"[INTEREST SEND] Peer {peer_state.peer_id} sent NOT INTERESTED to peer {remote_peer_id}")
-
-            interest_result = connection.receive_interest_message()
-            print(f"[INTEREST RECEIVE] Peer {peer_state.peer_id} received {interest_result.upper()} from peer {remote_peer_id}")
-
-            if interest_result == "interested":
-                connection.send_unchoke()
-                print(f"[UNCHOKE SEND] Peer {peer_state.peer_id} sent UNCHOKE to peer {remote_peer_id}")
-                uploader_loop(connection, peer_state, logger)
+            threading.Thread(
+                target=receiver_loop,
+                args=(connection, peer_state, logger),
+                daemon=True,
+            ).start()
 
             accepted += 1
 
@@ -190,7 +332,7 @@ def main():
 
     logger = PeerLogger(peer_id=peer_state.peer_id)
 
-    print("=== Phase F: Real File Bytes + Reconstruction ===")
+    print("=== Phase G: Preferred Neighbors + Optimistic Unchoking ===")
     print(f"Peer ID: {peer_state.peer_id}")
     print(f"Host: {peer_state.host}")
     print(f"Port: {peer_state.port}")
@@ -248,27 +390,28 @@ def main():
             peer_state.add_connection(remote_peer.peer_id, connection)
             logger.log_tcp_connection_to(remote_peer.peer_id)
 
-            connection.send_bitfield(peer_state.piece_manager.bitfield)
-            print(f"[BITFIELD SEND] Peer {peer_state.peer_id} sent bitfield to peer {remote_peer.peer_id}")
+            setup_connection_after_handshake_and_bitfield(connection, peer_state)
 
-            remote_bitfield = connection.receive_bitfield(peer_state.piece_manager.num_pieces)
-            print(f"[BITFIELD RECEIVE] Peer {peer_state.peer_id} received bitfield from peer {remote_peer.peer_id}")
-
-            if peer_state.is_interested_in_bitfield(remote_bitfield):
-                connection.send_interested()
-                print(f"[INTEREST SEND] Peer {peer_state.peer_id} sent INTERESTED to peer {remote_peer.peer_id}")
-            else:
-                connection.send_not_interested()
-                print(f"[INTEREST SEND] Peer {peer_state.peer_id} sent NOT INTERESTED to peer {remote_peer.peer_id}")
-
-            interest_result = connection.receive_interest_message()
-            print(f"[INTEREST RECEIVE] Peer {peer_state.peer_id} received {interest_result.upper()} from peer {remote_peer.peer_id}")
-
-            if connection.am_interested:
-                downloader_loop(connection, peer_state, logger)
+            threading.Thread(
+                target=receiver_loop,
+                args=(connection, peer_state, logger),
+                daemon=True,
+            ).start()
 
         except Exception as e:
             print(f"[CONNECT ERROR] Peer {peer_state.peer_id} could not complete setup with peer {remote_peer.peer_id}: {e}")
+
+    threading.Thread(
+        target=preferred_neighbor_scheduler,
+        args=(peer_state, logger),
+        daemon=True,
+    ).start()
+
+    threading.Thread(
+        target=optimistic_unchoke_scheduler,
+        args=(peer_state, logger),
+        daemon=True,
+    ).start()
 
     print("\n[RUNNING] Peer is now waiting. Press Ctrl+C to stop.")
 
@@ -276,9 +419,8 @@ def main():
         while True:
             time.sleep(2)
             print("\n=== Active Connections Summary ===")
-            with peer_state.connections_lock:
-                for remote_id, connection in peer_state.connections.items():
-                    print(f"{remote_id}: {connection.summary()}")
+            for remote_id, connection in peer_state.all_connections().items():
+                print(f"{remote_id}: {connection.summary()}")
 
             print(f"Total active connections stored: {peer_state.connection_count()}")
             print(f"Current owned pieces: {peer_state.piece_manager.piece_count()}")
@@ -288,13 +430,11 @@ def main():
 
         peer_server.close()
 
-        with peer_state.connections_lock:
-            for connection in peer_state.connections.values():
-                connection.close()
+        for connection in peer_state.all_connections().values():
+            connection.close()
 
         print(f"[SHUTDOWN] Peer {peer_state.peer_id} closed server and connections.")
 
 
 if __name__ == "__main__":
     main()
-

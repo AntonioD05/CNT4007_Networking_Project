@@ -8,12 +8,11 @@ from message import (
     build_interested,
     build_not_interested,
     build_unchoke,
+    build_choke,
     build_request,
     build_piece,
     build_have,
     parse_message,
-    parse_request_payload,
-    parse_piece_payload,
     MESSAGE_TYPES,
 )
 
@@ -34,24 +33,12 @@ class ConnectionHandler:
         self.is_connected = sock is not None
         self.handshake_completed = False
 
-        self.am_choked = True
-        self.peer_is_choked = True
+        self.am_choked = True          # remote peer is choking me
+        self.peer_is_choked = True     # I am choking remote peer
         self.peer_is_interested = False
         self.am_interested = False
 
         self.remote_bitfield: Optional[List[bool]] = None
-
-    def set_remote_peer_id(self, remote_peer_id: int) -> None:
-        self.remote_peer_id = remote_peer_id
-
-    def attach_socket(
-        self,
-        sock: socket.socket,
-        address: Optional[Tuple[str, int]] = None,
-    ) -> None:
-        self.sock = sock
-        self.address = address
-        self.is_connected = True
 
     def connect(self, host: str, port: int, timeout: float = 5.0) -> None:
         if self.sock is not None:
@@ -115,52 +102,19 @@ class ConnectionHandler:
         self.send_bytes(build_not_interested())
         self.am_interested = False
 
-    def receive_interest_message(self) -> str:
-        parsed = self.receive_message()
-
-        if parsed["type"] == MESSAGE_TYPES["interested"]:
-            self.peer_is_interested = True
-            return "interested"
-
-        if parsed["type"] == MESSAGE_TYPES["not_interested"]:
-            self.peer_is_interested = False
-            return "not_interested"
-
-        raise ValueError(f"Expected interested/not interested, got type {parsed['type_name']}")
-
     def send_unchoke(self) -> None:
         self.send_bytes(build_unchoke())
         self.peer_is_choked = False
 
-    def receive_unchoke(self) -> None:
-        parsed = self.receive_message()
-
-        if parsed["type"] != MESSAGE_TYPES["unchoke"]:
-            raise ValueError(f"Expected unchoke message, got type {parsed['type_name']}")
-
-        self.am_choked = False
+    def send_choke(self) -> None:
+        self.send_bytes(build_choke())
+        self.peer_is_choked = True
 
     def send_request(self, piece_index: int) -> None:
         self.send_bytes(build_request(piece_index))
 
-    def receive_request_piece_index(self) -> int:
-        parsed = self.receive_message()
-
-        if parsed["type"] != MESSAGE_TYPES["request"]:
-            raise ValueError(f"Expected request message, got type {parsed['type_name']}")
-
-        return parse_request_payload(parsed["payload"])
-
     def send_piece_message(self, piece_index: int, piece_data: bytes) -> None:
         self.send_bytes(build_piece(piece_index, piece_data))
-
-    def receive_piece_message(self) -> dict:
-        parsed = self.receive_message()
-
-        if parsed["type"] != MESSAGE_TYPES["piece"]:
-            raise ValueError(f"Expected piece message, got type {parsed['type_name']}")
-
-        return parse_piece_payload(parsed["payload"])
 
     def send_have(self, piece_index: int) -> None:
         self.send_bytes(build_have(piece_index))

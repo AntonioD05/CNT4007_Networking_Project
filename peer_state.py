@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Optional, Set
 import threading
 
 from config_loader import CommonConfig, PeerInfo
@@ -17,7 +17,13 @@ class PeerState:
     piece_manager: PieceManager = field(init=False)
     neighbors: List[PeerInfo] = field(init=False)
     connections: Dict[int, ConnectionHandler] = field(init=False)
+
     connections_lock: threading.Lock = field(init=False)
+    state_lock: threading.Lock = field(init=False)
+
+    preferred_neighbors: Set[int] = field(init=False)
+    optimistic_neighbor: Optional[int] = field(init=False)
+    download_counts: Dict[int, int] = field(init=False)
 
     def __post_init__(self):
         self.piece_manager = PieceManager(
@@ -36,6 +42,11 @@ class PeerState:
 
         self.connections = {}
         self.connections_lock = threading.Lock()
+        self.state_lock = threading.Lock()
+
+        self.preferred_neighbors = set()
+        self.optimistic_neighbor = None
+        self.download_counts = {}
 
     @property
     def peer_id(self) -> int:
@@ -74,16 +85,25 @@ class PeerState:
     def add_connection(self, remote_peer_id: int, connection: ConnectionHandler) -> None:
         with self.connections_lock:
             self.connections[remote_peer_id] = connection
+        with self.state_lock:
+            self.download_counts.setdefault(remote_peer_id, 0)
 
     def replace_connection_key(self, old_remote_peer_id: int, new_remote_peer_id: int) -> None:
         with self.connections_lock:
             connection = self.connections.pop(old_remote_peer_id, None)
             if connection is not None:
                 self.connections[new_remote_peer_id] = connection
+        with self.state_lock:
+            old_count = self.download_counts.pop(old_remote_peer_id, 0)
+            self.download_counts[new_remote_peer_id] = old_count
 
     def get_connection(self, remote_peer_id: int):
         with self.connections_lock:
             return self.connections.get(remote_peer_id)
+
+    def all_connections(self) -> Dict[int, ConnectionHandler]:
+        with self.connections_lock:
+            return dict(self.connections)
 
     def connection_count(self) -> int:
         with self.connections_lock:
@@ -94,3 +114,12 @@ class PeerState:
             if remote_bitfield[i] and not self.piece_manager.has_piece(i):
                 return True
         return False
+
+    def increment_download_count(self, remote_peer_id: int) -> None:
+        with self.state_lock:
+            self.download_counts[remote_peer_id] = self.download_counts.get(remote_peer_id, 0) + 1
+
+    def reset_download_counts(self) -> None:
+        with self.state_lock:
+            for peer_id in list(self.download_counts.keys()):
+                self.download_counts[peer_id] = 0
