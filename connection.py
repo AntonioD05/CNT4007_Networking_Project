@@ -7,7 +7,12 @@ from message import (
     build_bitfield,
     build_interested,
     build_not_interested,
+    build_unchoke,
+    build_request,
+    build_piece,
     parse_message,
+    parse_request_payload,
+    parse_piece_payload,
     MESSAGE_TYPES,
 )
 
@@ -87,10 +92,6 @@ class ConnectionHandler:
         self.send_bytes(message)
 
     def receive_message(self) -> dict:
-        """
-        Read one full normal protocol message:
-        first 4 bytes length, then the rest.
-        """
         length_bytes = recv_exact(self.sock, 4)
         message_length = int.from_bytes(length_bytes, byteorder="big")
         rest = recv_exact(self.sock, message_length)
@@ -101,9 +102,7 @@ class ConnectionHandler:
         parsed = self.receive_message()
 
         if parsed["type"] != MESSAGE_TYPES["bitfield"]:
-            raise ValueError(
-                f"Expected bitfield message, got type {parsed['type_name']}"
-            )
+            raise ValueError(f"Expected bitfield message, got type {parsed['type_name']}")
 
         remote_bitfield = bitfield_bytes_to_list(parsed["payload"], num_pieces)
         self.remote_bitfield = remote_bitfield
@@ -128,9 +127,41 @@ class ConnectionHandler:
             self.peer_is_interested = False
             return "not_interested"
 
-        raise ValueError(
-            f"Expected interested/not interested, got type {parsed['type_name']}"
-        )
+        raise ValueError(f"Expected interested/not interested, got type {parsed['type_name']}")
+
+    def send_unchoke(self) -> None:
+        self.send_bytes(build_unchoke())
+        self.peer_is_choked = False
+
+    def receive_unchoke(self) -> None:
+        parsed = self.receive_message()
+
+        if parsed["type"] != MESSAGE_TYPES["unchoke"]:
+            raise ValueError(f"Expected unchoke message, got type {parsed['type_name']}")
+
+        self.am_choked = False
+
+    def send_request(self, piece_index: int) -> None:
+        self.send_bytes(build_request(piece_index))
+
+    def receive_request_piece_index(self) -> int:
+        parsed = self.receive_message()
+
+        if parsed["type"] != MESSAGE_TYPES["request"]:
+            raise ValueError(f"Expected request message, got type {parsed['type_name']}")
+
+        return parse_request_payload(parsed["payload"])
+
+    def send_piece_message(self, piece_index: int, piece_data: bytes) -> None:
+        self.send_bytes(build_piece(piece_index, piece_data))
+
+    def receive_piece_message(self) -> dict:
+        parsed = self.receive_message()
+
+        if parsed["type"] != MESSAGE_TYPES["piece"]:
+            raise ValueError(f"Expected piece message, got type {parsed['type_name']}")
+
+        return parse_piece_payload(parsed["payload"])
 
     def close(self) -> None:
         if self.sock is not None:

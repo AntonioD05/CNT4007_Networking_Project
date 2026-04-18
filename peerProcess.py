@@ -76,6 +76,17 @@ def accept_incoming_connections(peer_server: PeerServer, peer_state: PeerState, 
             interest_result = connection.receive_interest_message()
             print(f"[INTEREST RECEIVE] Peer {peer_state.peer_id} received {interest_result.upper()} from peer {remote_peer_id}")
 
+            if interest_result == "interested":
+                connection.send_unchoke()
+                print(f"[UNCHOKE SEND] Peer {peer_state.peer_id} sent UNCHOKE to peer {remote_peer_id}")
+
+                requested_piece_index = connection.receive_request_piece_index()
+                print(f"[REQUEST RECEIVE] Peer {peer_state.peer_id} received request for piece {requested_piece_index} from peer {remote_peer_id}")
+
+                piece_data = peer_state.piece_manager.get_piece_data(requested_piece_index)
+                connection.send_piece_message(requested_piece_index, piece_data)
+                print(f"[PIECE SEND] Peer {peer_state.peer_id} sent piece {requested_piece_index} to peer {remote_peer_id}")
+
             accepted += 1
 
         except Exception as e:
@@ -209,7 +220,7 @@ def main():
     print(f"Packed bitfield bytes: {packed_bitfield}")
     print(f"Unpacked bitfield list: {unpacked_bitfield}")
 
-    print("\n=== Phase C: Bitfield Exchange + Interest ===")
+    print("\n=== Phase D: First Piece Transfer ===")
     earlier_peers = peer_state.get_earlier_peers()
     later_peers = peer_state.get_later_peers()
 
@@ -287,6 +298,29 @@ def main():
             interest_result = connection.receive_interest_message()
             print(f"[INTEREST RECEIVE] Peer {peer_state.peer_id} received {interest_result.upper()} from peer {remote_peer.peer_id}")
 
+            if interest_result == "interested":
+                print(f"[WAIT] Peer {peer_state.peer_id} is waiting for future request from peer {remote_peer.peer_id}")
+            else:
+                connection.receive_unchoke()
+                print(f"[UNCHOKE RECEIVE] Peer {peer_state.peer_id} received UNCHOKE from peer {remote_peer.peer_id}")
+
+                piece_index = peer_state.piece_manager.choose_missing_piece_from_remote_bitfield(remote_bitfield)
+                if piece_index is None:
+                    raise ValueError("No missing piece available to request")
+
+                peer_state.piece_manager.add_requested_piece(piece_index)
+                connection.send_request(piece_index)
+                print(f"[REQUEST SEND] Peer {peer_state.peer_id} requested piece {piece_index} from peer {remote_peer.peer_id}")
+
+                received_piece = connection.receive_piece_message()
+                received_piece_index = received_piece["piece_index"]
+                received_piece_data = received_piece["piece_data"]
+
+                peer_state.piece_manager.mark_piece_as_owned(received_piece_index, received_piece_data)
+
+                print(f"[PIECE RECEIVE] Peer {peer_state.peer_id} received piece {received_piece_index} from peer {remote_peer.peer_id}")
+                print(f"[PIECE STORE] Peer {peer_state.peer_id} now has {peer_state.piece_manager.piece_count()} pieces")
+
         except Exception as e:
             print(
                 f"[CONNECT ERROR] Peer {peer_state.peer_id} could not complete setup with "
@@ -307,6 +341,7 @@ def main():
                     print(f"{remote_id}: {connection.summary()}")
 
             print(f"Total active connections stored: {peer_state.connection_count()}")
+            print(f"Current owned pieces: {peer_state.piece_manager.piece_count()}")
 
     except KeyboardInterrupt:
         print(f"\n[SHUTDOWN] Stopping peer {peer_state.peer_id}...")
@@ -322,3 +357,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

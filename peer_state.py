@@ -23,6 +23,7 @@ class PeerState:
             file_size=self.common_config.file_size,
             piece_size=self.common_config.piece_size,
             starts_with_file=self.current_peer.has_file,
+            owner_peer_id=self.current_peer.peer_id,
         )
 
         self.neighbors = [
@@ -86,11 +87,9 @@ class PeerState:
             return len(self.connections)
 
     def is_interested_in_bitfield(self, remote_bitfield: List[bool]) -> bool:
-        """
-        Return True if the remote peer has at least one piece I do not have.
-        """
         for i in range(min(len(remote_bitfield), self.piece_manager.num_pieces)):
             if remote_bitfield[i] and not self.piece_manager.has_piece(i):
                 return True
         return False
-    
+
+
