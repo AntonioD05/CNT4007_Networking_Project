@@ -12,6 +12,7 @@ class PeerState:
     current_peer: PeerInfo
     common_config: CommonConfig
     all_peers: List[PeerInfo]
+    data_dir: str
 
     piece_manager: PieceManager = field(init=False)
     neighbors: List[PeerInfo] = field(init=False)
@@ -20,10 +21,12 @@ class PeerState:
 
     def __post_init__(self):
         self.piece_manager = PieceManager(
+            file_name=self.common_config.file_name,
             file_size=self.common_config.file_size,
             piece_size=self.common_config.piece_size,
             starts_with_file=self.current_peer.has_file,
             owner_peer_id=self.current_peer.peer_id,
+            data_dir=self.data_dir,
         )
 
         self.neighbors = [

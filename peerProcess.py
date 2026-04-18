@@ -1,6 +1,7 @@
 import sys
 import time
 import threading
+from pathlib import Path
 
 from config_loader import load_common_config, load_peer_info, get_peer_by_id
 from peer_state import PeerState
@@ -10,6 +11,21 @@ from connection import ConnectionHandler
 from message import parse_have_payload, MESSAGE_TYPES
 
 CONFIG_DIR = "project_config_file_local"
+
+
+def resolve_peer_data_dir(peer_id: int) -> str:
+    candidates = [
+        Path(CONFIG_DIR) / str(peer_id),
+        Path(f"peer_{peer_id}"),
+    ]
+
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+
+    default_dir = Path(CONFIG_DIR) / str(peer_id)
+    default_dir.mkdir(parents=True, exist_ok=True)
+    return str(default_dir)
 
 
 def ensure_remote_bitfield(connection: ConnectionHandler, num_pieces: int) -> None:
@@ -78,8 +94,10 @@ def downloader_loop(connection: ConnectionHandler, peer_state: PeerState, logger
         print(f"[HAVE SEND] Peer {peer_state.peer_id} sent HAVE for piece {received_piece_index} to peer {remote_peer_id}")
 
         if peer_state.piece_manager.has_complete_file():
+            output_path = peer_state.piece_manager.reconstruct_file()
             logger.log_complete_file()
             print(f"[COMPLETE] Peer {peer_state.peer_id} now has the complete file.")
+            print(f"[FILE WRITE] Peer {peer_state.peer_id} reconstructed file at: {output_path}")
             connection.send_not_interested()
             print(f"[INTEREST SEND] Peer {peer_state.peer_id} sent NOT INTERESTED to peer {remote_peer_id}")
             break
@@ -161,19 +179,23 @@ def main():
         print(f"Error: {e}")
         sys.exit(1)
 
+    data_dir = resolve_peer_data_dir(peer_id)
+
     peer_state = PeerState(
         current_peer=current_peer,
         common_config=common_config,
         all_peers=peers,
+        data_dir=data_dir,
     )
 
     logger = PeerLogger(peer_id=peer_state.peer_id)
 
-    print("=== Phase E: HAVE + Repeated Piece Requests ===")
+    print("=== Phase F: Real File Bytes + Reconstruction ===")
     print(f"Peer ID: {peer_state.peer_id}")
     print(f"Host: {peer_state.host}")
     print(f"Port: {peer_state.port}")
     print(f"Starts with file: {peer_state.has_file}")
+    print(f"Data directory: {data_dir}")
     print(f"Initial pieces owned: {peer_state.piece_manager.piece_count()}")
 
     earlier_peers = peer_state.get_earlier_peers()
@@ -275,4 +297,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+
