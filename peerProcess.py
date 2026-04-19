@@ -79,18 +79,22 @@ def receiver_loop(connection: ConnectionHandler, peer_state: PeerState, logger: 
 
             if msg_type == MESSAGE_TYPES["interested"]:
                 connection.peer_is_interested = True
+                logger.log_receive_interested(remote_peer_id)
                 print(f"[INTEREST RECEIVE] Peer {peer_state.peer_id} received INTERESTED from peer {remote_peer_id}")
 
             elif msg_type == MESSAGE_TYPES["not_interested"]:
                 connection.peer_is_interested = False
+                logger.log_receive_not_interested(remote_peer_id)
                 print(f"[INTEREST RECEIVE] Peer {peer_state.peer_id} received NOT_INTERESTED from peer {remote_peer_id}")
 
             elif msg_type == MESSAGE_TYPES["choke"]:
                 connection.am_choked = True
+                logger.log_choked_by(remote_peer_id)
                 print(f"[CHOKE RECEIVE] Peer {peer_state.peer_id} received CHOKE from peer {remote_peer_id}")
 
             elif msg_type == MESSAGE_TYPES["unchoke"]:
                 connection.am_choked = False
+                logger.log_unchoked_by(remote_peer_id)
                 print(f"[UNCHOKE RECEIVE] Peer {peer_state.peer_id} received UNCHOKE from peer {remote_peer_id}")
                 request_next_piece(connection, peer_state)
 
@@ -133,8 +137,9 @@ def receiver_loop(connection: ConnectionHandler, peer_state: PeerState, logger: 
                 piece_index = parse_have_payload(parsed["payload"])
                 ensure_remote_bitfield(connection, peer_state.piece_manager.num_pieces)
                 connection.remote_bitfield[piece_index] = True
+                logger.log_receive_have(remote_peer_id, piece_index)
                 print(f"[HAVE RECEIVE] Peer {peer_state.peer_id} received HAVE for piece {piece_index} from peer {remote_peer_id}")
-
+                
                 if all(connection.remote_bitfield):
                     peer_state.mark_peer_complete(remote_peer_id)
                     print(f"[PEER COMPLETE] Peer {peer_state.peer_id} marked peer {remote_peer_id} complete.")

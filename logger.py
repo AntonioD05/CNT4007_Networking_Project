@@ -9,6 +9,7 @@ class PeerLogger:
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.log_file = self.log_dir / f"log_peer_{peer_id}.log"
+        self.log_file.write_text("")
 
     def _timestamp(self) -> str:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
