@@ -25,6 +25,9 @@ class PeerState:
     optimistic_neighbor: Optional[int] = field(init=False)
     download_counts: Dict[int, int] = field(init=False)
 
+    peer_completion: Dict[int, bool] = field(init=False)
+    shutdown_event: threading.Event = field(init=False)
+
     def __post_init__(self):
         self.piece_manager = PieceManager(
             file_name=self.common_config.file_name,
@@ -47,6 +50,13 @@ class PeerState:
         self.preferred_neighbors = set()
         self.optimistic_neighbor = None
         self.download_counts = {}
+
+        self.peer_completion = {
+            peer.peer_id: peer.has_file for peer in self.all_peers
+        }
+        self.peer_completion[self.current_peer.peer_id] = self.piece_manager.has_complete_file()
+
+        self.shutdown_event = threading.Event()
 
     @property
     def peer_id(self) -> int:
@@ -123,3 +133,20 @@ class PeerState:
         with self.state_lock:
             for peer_id in list(self.download_counts.keys()):
                 self.download_counts[peer_id] = 0
+
+    def mark_peer_complete(self, peer_id: int) -> None:
+        with self.state_lock:
+            self.peer_completion[peer_id] = True
+
+    def mark_self_complete_if_needed(self) -> None:
+        if self.piece_manager.has_complete_file():
+            with self.state_lock:
+                self.peer_completion[self.peer_id] = True
+
+    def is_peer_complete(self, peer_id: int) -> bool:
+        with self.state_lock:
+            return self.peer_completion.get(peer_id, False)
+
+    def all_peers_complete(self) -> bool:
+        with self.state_lock:
+            return all(self.peer_completion.values())

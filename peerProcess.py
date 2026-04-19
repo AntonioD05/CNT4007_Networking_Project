@@ -34,6 +34,13 @@ def ensure_remote_bitfield(connection: ConnectionHandler, num_pieces: int) -> No
         connection.remote_bitfield = [False] * num_pieces
 
 
+def maybe_finish_swarm(peer_state: PeerState) -> None:
+    peer_state.mark_self_complete_if_needed()
+    if peer_state.all_peers_complete():
+        print(f"[SWARM COMPLETE] Peer {peer_state.peer_id} detected all peers are complete.")
+        peer_state.shutdown_event.set()
+
+
 def send_have_to_all(peer_state: PeerState, piece_index: int) -> None:
     connections = peer_state.all_connections()
     for remote_peer_id, connection in connections.items():
@@ -43,7 +50,7 @@ def send_have_to_all(peer_state: PeerState, piece_index: int) -> None:
 
 
 def request_next_piece(connection: ConnectionHandler, peer_state: PeerState) -> None:
-    if connection.am_choked:
+    if connection.am_choked or peer_state.shutdown_event.is_set():
         return
 
     if connection.remote_bitfield is None:
@@ -65,7 +72,7 @@ def request_next_piece(connection: ConnectionHandler, peer_state: PeerState) -> 
 def receiver_loop(connection: ConnectionHandler, peer_state: PeerState, logger: PeerLogger) -> None:
     remote_peer_id = connection.remote_peer_id
 
-    while True:
+    while not peer_state.shutdown_event.is_set():
         try:
             parsed = connection.receive_message()
             msg_type = parsed["type"]
@@ -113,10 +120,12 @@ def receiver_loop(connection: ConnectionHandler, peer_state: PeerState, logger: 
                 if peer_state.piece_manager.has_complete_file():
                     output_path = peer_state.piece_manager.reconstruct_file()
                     logger.log_complete_file()
+                    peer_state.mark_self_complete_if_needed()
                     print(f"[COMPLETE] Peer {peer_state.peer_id} now has the complete file.")
                     print(f"[FILE WRITE] Peer {peer_state.peer_id} reconstructed file at: {output_path}")
                     connection.send_not_interested()
                     print(f"[INTEREST SEND] Peer {peer_state.peer_id} sent NOT INTERESTED to peer {remote_peer_id}")
+                    maybe_finish_swarm(peer_state)
                 else:
                     request_next_piece(connection, peer_state)
 
@@ -125,6 +134,11 @@ def receiver_loop(connection: ConnectionHandler, peer_state: PeerState, logger: 
                 ensure_remote_bitfield(connection, peer_state.piece_manager.num_pieces)
                 connection.remote_bitfield[piece_index] = True
                 print(f"[HAVE RECEIVE] Peer {peer_state.peer_id} received HAVE for piece {piece_index} from peer {remote_peer_id}")
+
+                if all(connection.remote_bitfield):
+                    peer_state.mark_peer_complete(remote_peer_id)
+                    print(f"[PEER COMPLETE] Peer {peer_state.peer_id} marked peer {remote_peer_id} complete.")
+                    maybe_finish_swarm(peer_state)
 
                 if peer_state.piece_manager.needs_piece(piece_index):
                     if not connection.am_interested:
@@ -138,7 +152,8 @@ def receiver_loop(connection: ConnectionHandler, peer_state: PeerState, logger: 
                 print(f"[RECEIVE LOOP] Peer {peer_state.peer_id} got unexpected message type {parsed['type_name']} from peer {remote_peer_id}")
 
         except Exception as e:
-            print(f"[RECEIVE LOOP END] Peer {peer_state.peer_id} connection with peer {remote_peer_id} ended: {e}")
+            if not peer_state.shutdown_event.is_set():
+                print(f"[RECEIVE LOOP END] Peer {peer_state.peer_id} connection with peer {remote_peer_id} ended: {e}")
             break
 
 
@@ -225,8 +240,10 @@ def apply_choking_rules(peer_state: PeerState) -> None:
 def preferred_neighbor_scheduler(peer_state: PeerState, logger: PeerLogger) -> None:
     interval = peer_state.common_config.unchoking_interval
 
-    while True:
+    while not peer_state.shutdown_event.is_set():
         time.sleep(interval)
+        if peer_state.shutdown_event.is_set():
+            break
         choose_preferred_neighbors(peer_state, logger)
         apply_choking_rules(peer_state)
         peer_state.reset_download_counts()
@@ -235,10 +252,19 @@ def preferred_neighbor_scheduler(peer_state: PeerState, logger: PeerLogger) -> N
 def optimistic_unchoke_scheduler(peer_state: PeerState, logger: PeerLogger) -> None:
     interval = peer_state.common_config.optimistic_unchoking_interval
 
-    while True:
+    while not peer_state.shutdown_event.is_set():
         time.sleep(interval)
+        if peer_state.shutdown_event.is_set():
+            break
         choose_optimistic_neighbor(peer_state, logger)
         apply_choking_rules(peer_state)
+
+
+def completion_monitor(peer_state: PeerState) -> None:
+    while not peer_state.shutdown_event.is_set():
+        time.sleep(1)
+        peer_state.mark_self_complete_if_needed()
+        maybe_finish_swarm(peer_state)
 
 
 def setup_connection_after_handshake_and_bitfield(connection: ConnectionHandler, peer_state: PeerState) -> None:
@@ -249,6 +275,9 @@ def setup_connection_after_handshake_and_bitfield(connection: ConnectionHandler,
 
     remote_bitfield = connection.receive_bitfield(peer_state.piece_manager.num_pieces)
     print(f"[BITFIELD RECEIVE] Peer {peer_state.peer_id} received bitfield from peer {remote_peer_id}")
+
+    if all(remote_bitfield):
+        peer_state.mark_peer_complete(remote_peer_id)
 
     if peer_state.is_interested_in_bitfield(remote_bitfield):
         connection.send_interested()
@@ -261,7 +290,7 @@ def setup_connection_after_handshake_and_bitfield(connection: ConnectionHandler,
 def accept_incoming_connections(peer_server: PeerServer, peer_state: PeerState, logger: PeerLogger, expected_count: int):
     accepted = 0
 
-    while accepted < expected_count:
+    while accepted < expected_count and not peer_state.shutdown_event.is_set():
         try:
             client_socket, client_address = peer_server.accept_connection()
 
@@ -297,7 +326,7 @@ def accept_incoming_connections(peer_server: PeerServer, peer_state: PeerState, 
             accepted += 1
 
         except Exception as e:
-            if peer_server.is_listening:
+            if peer_server.is_listening and not peer_state.shutdown_event.is_set():
                 print(f"[ACCEPT ERROR] {e}")
             break
 
@@ -332,7 +361,7 @@ def main():
 
     logger = PeerLogger(peer_id=peer_state.peer_id)
 
-    print("=== Phase G: Preferred Neighbors + Optimistic Unchoking ===")
+    print("=== Phase H: Global Completion + Clean Termination ===")
     print(f"Peer ID: {peer_state.peer_id}")
     print(f"Host: {peer_state.host}")
     print(f"Port: {peer_state.port}")
@@ -359,12 +388,11 @@ def main():
         print(f"[SERVER ERROR] Could not start server: {e}")
         sys.exit(1)
 
-    accept_thread = threading.Thread(
+    threading.Thread(
         target=accept_incoming_connections,
         args=(peer_server, peer_state, logger, len(later_peers)),
         daemon=True,
-    )
-    accept_thread.start()
+    ).start()
 
     time.sleep(1)
 
@@ -413,10 +441,16 @@ def main():
         daemon=True,
     ).start()
 
-    print("\n[RUNNING] Peer is now waiting. Press Ctrl+C to stop.")
+    threading.Thread(
+        target=completion_monitor,
+        args=(peer_state,),
+        daemon=True,
+    ).start()
+
+    print("\n[RUNNING] Peer is now waiting.")
 
     try:
-        while True:
+        while not peer_state.shutdown_event.is_set():
             time.sleep(2)
             print("\n=== Active Connections Summary ===")
             for remote_id, connection in peer_state.all_connections().items():
@@ -425,16 +459,15 @@ def main():
             print(f"Total active connections stored: {peer_state.connection_count()}")
             print(f"Current owned pieces: {peer_state.piece_manager.piece_count()}")
 
-    except KeyboardInterrupt:
-        print(f"\n[SHUTDOWN] Stopping peer {peer_state.peer_id}...")
+        print(f"[SHUTDOWN] Peer {peer_state.peer_id} detected shutdown condition.")
 
+    finally:
         peer_server.close()
 
         for connection in peer_state.all_connections().values():
             connection.close()
 
         print(f"[SHUTDOWN] Peer {peer_state.peer_id} closed server and connections.")
-
 
 if __name__ == "__main__":
     main()
